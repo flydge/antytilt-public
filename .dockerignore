@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.codex
+node_modules
+dist
+data
+.env
+.env.*
+!.env.example
+!.env.local-production.example
+.beta-htpasswd
+*.log
+*.tsbuildinfo
+.DS_Store
+docs

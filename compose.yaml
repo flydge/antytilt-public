@@ -1,0 +1,143 @@
+x-app-environment: &app-environment
+  NODE_ENV: production
+  DATABASE_URL: postgresql://antytilt:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/antytilt
+  DATABASE_POOL_MAX: "5"
+  DATABASE_CONNECT_TIMEOUT_MS: "10000"
+  DATABASE_IDLE_TIMEOUT_MS: "30000"
+  DATABASE_SSL: "false"
+  REDIS_URL: redis://redis:6379
+  REDIS_PREFIX: antytilt-local-production
+  RM_WORKER_CONCURRENCY: "4"
+  RM_LOCK_TTL_MS: "30000"
+  WORKER_STALE_AFTER_MS: "30000"
+  RM_MONITOR_INTERVAL_MS: "5000"
+  CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY:?CREDENTIALS_ENCRYPTION_KEY is required}
+  ALLOW_LIVE_TRADING: "true"
+  ALLOW_LIVE_TRIGGER_ORDERS: "false"
+  ALLOW_LIVE_RM_AUTOMATION: "true"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: antytilt
+      POSTGRES_USER: antytilt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - antytilt_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U antytilt -d antytilt"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - antytilt_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      target: runtime
+    image: antytilt-local:latest
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    environment:
+      <<: *app-environment
+      PORT: "8787"
+      API_HOST: 0.0.0.0
+      DATABASE_APPLICATION_NAME: antytilt-local-api
+      ALLOWED_ORIGINS: http://localhost:${APP_PORT:-8787},http://127.0.0.1:${APP_PORT:-8787}
+    ports:
+      - "127.0.0.1:${APP_PORT:-8787}:8787"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8787/api/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+
+  worker:
+    image: antytilt-local:latest
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    command: ["npm", "run", "start:worker"]
+    environment:
+      <<: *app-environment
+      DATABASE_APPLICATION_NAME: antytilt-local-rm-worker
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://api:8787/api/health/worker').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+
+  beta-gateway:
+    image: nginx:alpine
+    profiles: ["quick-tunnel", "tunnel"]
+    restart: unless-stopped
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./.beta-htpasswd:/etc/nginx/.htpasswd:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+
+  quick-tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["quick-tunnel"]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--url", "http://beta-gateway:8080"]
+    depends_on:
+      beta-gateway:
+        condition: service_started
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN:-}"]
+    depends_on:
+      beta-gateway:
+        condition: service_started
+
+volumes:
+  antytilt_postgres:
+  antytilt_redis:

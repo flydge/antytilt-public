@@ -1,0 +1,119 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+previews:
+  generation: off
+
+envVarGroups:
+  - name: antytilt-production-secrets
+    envVars:
+      - key: CREDENTIALS_ENCRYPTION_KEY
+        generateValue: true
+
+services:
+  - type: web
+    name: antytilt-web
+    runtime: node
+    region: frankfurt
+    plan: 1c-2g
+    numInstances: 1
+    autoDeployTrigger: commit
+    buildCommand: npm ci --include=dev && npm run build
+    preDeployCommand: npm run db:migrate
+    startCommand: npm run start:api
+    healthCheckPath: /api/health/ready
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - fromGroup: antytilt-production-secrets
+      - key: NODE_ENV
+        value: production
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: antytilt-postgres
+          property: connectionString
+      - key: DATABASE_POOL_MAX
+        value: "10"
+      - key: DATABASE_SSL
+        value: "false"
+      - key: DATABASE_APPLICATION_NAME
+        value: antytilt-api
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: antytilt-redis
+          property: connectionString
+      - key: REDIS_PREFIX
+        value: antytilt-production
+      - key: ALLOW_LIVE_TRADING
+        value: "true"
+      - key: ALLOW_LIVE_TRIGGER_ORDERS
+        value: "false"
+      - key: ALLOW_LIVE_RM_AUTOMATION
+        value: "true"
+      - key: RM_LOCK_TTL_MS
+        value: "30000"
+      - key: WORKER_STALE_AFTER_MS
+        value: "30000"
+
+  - type: worker
+    name: antytilt-rm-worker
+    runtime: node
+    region: frankfurt
+    plan: 1c-2g
+    numInstances: 1
+    autoDeployTrigger: commit
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run start:worker
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - fromGroup: antytilt-production-secrets
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: antytilt-postgres
+          property: connectionString
+      - key: DATABASE_POOL_MAX
+        value: "10"
+      - key: DATABASE_SSL
+        value: "false"
+      - key: DATABASE_APPLICATION_NAME
+        value: antytilt-rm-worker
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: antytilt-redis
+          property: connectionString
+      - key: REDIS_PREFIX
+        value: antytilt-production
+      - key: ALLOW_LIVE_TRADING
+        value: "true"
+      - key: ALLOW_LIVE_TRIGGER_ORDERS
+        value: "false"
+      - key: ALLOW_LIVE_RM_AUTOMATION
+        value: "true"
+      - key: RM_MONITOR_INTERVAL_MS
+        value: "5000"
+      - key: RM_WORKER_CONCURRENCY
+        value: "4"
+      - key: RM_LOCK_TTL_MS
+        value: "30000"
+
+  - type: keyvalue
+    name: antytilt-redis
+    region: frankfurt
+    plan: 256mb
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+    persistenceMode: journal-snapshot
+
+databases:
+  - name: antytilt-postgres
+    databaseName: antytilt
+    user: antytilt
+    region: frankfurt
+    plan: 1c-2g
+    postgresMajorVersion: "17"
+    diskSizeGB: 15
+    storageAutoscalingEnabled: true
+    ipAllowList: []
